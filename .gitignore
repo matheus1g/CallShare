@@ -1,0 +1,5 @@
+*.zip
+*.log
+*.config.json
+CallShare-runtime/control/
+CallShare-runtime/state/
