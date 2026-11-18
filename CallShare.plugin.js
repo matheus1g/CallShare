@@ -1,16 +1,15 @@
 /**
  * @name CallShare
  * @author Mathe
- * @version 0.16.0
+ * @version 0.16.1
  * @description Prepara uma rota nativa para o Discord. Auxiliar instalado uma vez; sem nova autorização a cada preparação.
  */
 
 // Original implementation. This is an investigation build, not a confirmed bypass.
 const NAME = "CallShare";
-const VERSION = "0.16.0";
+const VERSION = "0.16.1";
 const BACKEND_VERSION = "0.13.4";
 const HELPER_VERSION = "0.16.0";
-const PROJECT_RELEASES = 'https://github.com/matheus1g/CallShare/releases/latest';
 const PROJECT_FEED = 'https://raw.githubusercontent.com/matheus1g/CallShare/main/release.json';
 const VIDEO_CODECS = new Set(["H264", "H265", "VP8", "VP9", "AV1", "AV1X"]);
 const MEDIA_EVENTS = ["video-codec-error", "video-encoder-fallback", "video-decoder-fallback",
@@ -37,6 +36,11 @@ module.exports = class CallShare {
         this.feed = releaseFeedUrl(BdApi.Data.load(NAME,'updateFeed') ?? PROJECT_FEED);
         this.feedCache = BdApi.Data.load(NAME,'updateCheck') || {};
         this.feedTask = null;
+        this.packageJob=null;this.packageMessage='';this.releaseNoticeVersion=null;this.dismissReleaseNotice=null;
+        if(BdApi.Data.load(NAME,'applyingVersion')===VERSION){
+            BdApi.Data.save(NAME,'applyingVersion',null);
+            this.toast('CallShare atualizado para '+VERSION+'.','success');
+        }
         this.feedMessage = '';
         this.sessionRoute = null;
         this.routeStatus = "desligada";
@@ -250,6 +254,8 @@ module.exports = class CallShare {
         this.running = false;
         clearInterval(this.timer);
         clearTimeout(this.feedTimer);
+        clearInterval(this.packageTimer);
+        this.dismissReleaseNotice?.();this.dismissReleaseNotice=null;
         window.removeEventListener?.('focus',this.afterInstaller);
         clearTimeout(this.mountTimer);
         for (const timer of this.pending) clearTimeout(timer);
@@ -607,7 +613,7 @@ module.exports = class CallShare {
     }
 
     tickAutomatic() {
-        if(!this.running||!this.autoPolicy)return;
+        if(!this.running||!this.autoPolicy||this.packageJob)return;
         if(this.manualDemandCall&&this.manualDemandCall!==this.voiceChannelId())this.manualDemandCall=null;
         if(this.routeStrategy==='on-demand'){this.bootstrap.tick();this.updateToolbar();}
         if(this.sessionRoute?.stopped&&this.sessionRoute.cleanupConfirmed&&!this.routeDisableBusy){
@@ -1244,7 +1250,7 @@ module.exports = class CallShare {
     closePanel({restoreFocus=true}={}) {
         this.panelCleanup?.();this.panelCleanup=null;
         document.getElementById(PANEL)?.remove();this.menuButton?.setAttribute('aria-expanded','false');
-        this.setupNotice=this.setupText=this.setupAction=this.releaseNotice=this.releaseText=this.releaseLink=this.feedStatus=null;
+        this.setupNotice=this.setupText=this.setupAction=this.releaseNotice=this.releaseText=this.updateButton=this.feedStatus=null;
         for(const key of ['panelTitle','panelDescription','panelCard','panelProgress','panelProviderInfo','panelProviderSession','panelProviderSummary','panelConnect','panelRestore','panelInstall','panelStateIcon','panelRows','panelTabs','panelPages','panelAdvanced','panelDevButton','panelAutomatic','panelContinuous'])this[key]=null;
         if(restoreFocus)(this.panelInvoker?.isConnected===false?this.menuButton:this.panelInvoker||this.menuButton)?.focus?.();this.panelInvoker=null;
     }
@@ -1322,7 +1328,7 @@ module.exports = class CallShare {
         this.panelInstall=this.button('Instalar/atualizar auxiliar',()=>this.installNativeHelper());
         const setup=this.element('div',null,'cs-actions');setup.append(this.panelInstall,this.button('Preparação completa · alternativa',()=>this.enableSessionRoute()));advanced.append(setup);
         this.appendUpdateSettings(advanced);
-        advanced.append(this.element('p','Esse botão instala ou repara o serviço do Windows incluído em CallShare-runtime. Para atualizar somente o plugin e o helper, copie os arquivos do pacote. Com o túnel em uso ou em preparação, pause o CallShare e aguarde o encerramento para habilitar a instalação.','cs-muted'));
+        advanced.append(this.element('p','Use esse botão para instalar ou reparar o serviço do Windows. Quando houver uma nova versão do pacote, saia da call e clique em Atualizar no aviso do CallShare.','cs-muted'));
         const explanations=compact?this.element('details'):advanced;if(compact)explanations.append(this.element('summary','Como a conexão funciona'));
         const routeText=this.element('p','Detalhe da conexão: '+this.routeStatus);routeText.id='callshare-route-state';explanations.append(routeText);
         explanations.append(this.element('p','Durante a preparação, a voz atual fica direta e o restante do Discord usa o túnel; ainda não é um filtro exclusivo de vídeo. No modo sob demanda, o encaminhamento é desligado após o início da mídia ou após 60 segundos sem confirmação. A VPN permanece conectada em espera, sem encaminhar o Discord. Sair da call encerra a VPN. Outros aplicativos mantêm a conexão normal. O IPv6 do Discord fica bloqueado somente enquanto o encaminhamento IPv4 está ativo.'));
@@ -1362,9 +1368,8 @@ module.exports = class CallShare {
         this.setupNotice.append(this.setupText,this.setupAction);
         this.releaseNotice=this.element('div',null,'cs-notice');
         this.releaseNotice.setAttribute('role','status');
-        this.releaseText=this.element('p');this.releaseLink=this.element('a','Abrir versão no GitHub');
-        this.releaseLink.href=PROJECT_RELEASES;this.releaseLink.target='_blank';this.releaseLink.rel='noopener noreferrer';
-        this.releaseNotice.append(this.releaseText,this.releaseLink);
+        this.releaseText=this.element('p');this.updateButton=this.button('Atualizar',()=>this.installPackageUpdate());
+        this.releaseNotice.append(this.releaseText,this.updateButton);
         panel.append(this.setupNotice,this.releaseNotice);
         if(this.devMode){
             this.appendPanelOverview(panel);this.appendAutomaticControl(panel);this.appendReportCopies(panel);
@@ -1535,7 +1540,7 @@ module.exports = class CallShare {
             const path = require("path"), fs = require("fs"), crypto = require("crypto"), electron = require("electron");
             if (typeof BdApi.Net?.fetch !== "function" || typeof electron.shell?.openPath !== "function")
                 throw Object.assign(new Error("API indisponível"), {code:"CS_BD_API"});
-            return new SessionClient({root: path.join(BdApi.Plugins.folder, "CallShare-runtime"), onStatus, scope:"rtc",
+            return new SessionClient({root: runtimeForVersion(fs,path,BdApi.Plugins.folder,VERSION), onStatus, scope:"rtc",
                 onEvidence:(role,event,evidence) => {
                     if (!this.running) return;
                     this.saveRouteEvidence(evidence);
@@ -1573,11 +1578,65 @@ module.exports = class CallShare {
         }
         const available=this.feed && this.feedCache?.url===this.feed && newerRelease(this.feedCache.version,VERSION);
         if(this.releaseNotice){
-            this.releaseNotice.hidden=!available;
-            text(this.releaseText,available?'CallShare '+this.feedCache.version+' disponível. Atualize o JS e o runtime juntos pelo pacote da nova versão.':'');
-            this.releaseLink.hidden=this.feed!==PROJECT_FEED;
+            this.releaseNotice.hidden=!available&&!this.packageMessage;
+            const busy=this.voiceChannelId()||!this.canInstallNativeHelper();
+            text(this.releaseText,this.packageMessage||(available?'CallShare '+this.feedCache.version+' disponível.'+(busy?' Saia da call para atualizar.':''):''));
+            this.updateButton.hidden=!available||this.feed!==PROJECT_FEED;
+            this.updateButton.disabled=!!(this.packageJob||busy);
         }
         text(this.feedStatus,this.feedMessage || (this.feed?'Aviso automático uma vez por dia.':'Consulta automática desativada.'));
+    }
+
+    announceRelease() {
+        const latest=this.feedCache?.version;
+        if(this.feed!==PROJECT_FEED || this.feedCache?.url!==PROJECT_FEED || !newerRelease(latest,VERSION) || latest===this.releaseNoticeVersion)return;
+        this.releaseNoticeVersion=latest;
+        this.dismissReleaseNotice?.();
+        if(typeof BdApi.UI.showNotice==='function'){
+            const dismiss=BdApi.UI.showNotice('CallShare '+latest+' disponível.',{type:'info',buttons:[{label:'Atualizar',onClick:()=>this.installPackageUpdate()}]});
+            this.dismissReleaseNotice=typeof dismiss==='function'?dismiss:null;
+        }else this.toast('CallShare '+latest+' disponível. Abra o painel e clique em Atualizar.');
+    }
+
+    async installPackageUpdate() {
+        if(!this.running||this.packageJob||this.feed!==PROJECT_FEED||this.feedCache?.url!==PROJECT_FEED||!newerRelease(this.feedCache.version,VERSION))return;
+        if(this.voiceChannelId()||!this.canInstallNativeHelper())return this.toast('Saia da call e aguarde o túnel encerrar para atualizar.','warning');
+        const job={},generation=this.generation;
+        const current=()=>this.running&&generation===this.generation&&this.packageJob===job;
+        const finish=(message,success=false)=>{
+            if(!current())return;
+            clearInterval(this.packageTimer);this.packageJob=null;this.packageMessage=message;
+            if(!success)BdApi.Data.save(NAME,'applyingVersion',null);
+            this.renderMaintenance();if(!success)this.toast(message,'warning');
+            if(success)BdApi.Plugins.reload?.(NAME);
+        };
+        this.packageJob=job;this.packageMessage='Preparando atualização…';this.renderMaintenance();
+        try{
+            const fs=require('fs'),path=require('path'),crypto=require('crypto'),electron=require('electron');
+            const folder=BdApi.Plugins.folder,base=path.join(folder,'CallShare-runtime');
+            const file=path.join(runtimeForVersion(fs,path,folder,VERSION),'CallShare-update.exe');
+            if(crypto.createHash('sha256').update(fs.readFileSync(file,null)).digest('hex')!=='86dd8bf3cab3bbeda4399886be1e616ef2d267bb3a7f57729559d9e4f1b1c6e7')throw Error();
+            const id=Array.from(crypto.randomBytes(16),byte=>byte.toString(16).padStart(2,'0')).join('');
+            const request=path.join(base,'update-request.json'),temp=request+'.'+id+'.tmp';
+            fs.writeFileSync(temp,JSON.stringify({id,version:this.feedCache.version}));fs.renameSync(temp,request);
+            BdApi.Data.save(NAME,'applyingVersion',this.feedCache.version);
+            const result=await electron.shell.openPath(file);
+            if(result)throw Error();
+            if(!current())return;
+            const start=Date.now();
+            const progress={checking:'Conferindo a versão publicada…',downloading:'Baixando o pacote…',verifying:'Verificando a integridade do pacote…',installing:'Aplicando a atualização…'};
+            this.packageTimer=setInterval(()=>{
+                if(!current())return;
+                let status;try{status=smallReleaseFile(fs,path.join(base,'update-status.json'));}catch{}
+                if(status?.id===id){
+                    if(status.phase==='done')return finish('CallShare atualizado.',true);
+                    if(status.phase==='busy')return finish('O auxiliar ainda está em uso. Tente atualizar após ele encerrar.');
+                    if(status.phase==='failed')return finish('A atualização não foi concluída. Você pode tentar novamente.');
+                    if(progress[status.phase]){this.packageMessage=progress[status.phase];this.renderMaintenance();}
+                }
+                if(Date.now()-start>600000)finish('Sem confirmação do atualizador. Confira a versão do plugin antes de tentar novamente.');
+            },1000);
+        }catch{finish('Não foi possível abrir o atualizador verificado. Confira o runtime desta instalação.');}
     }
 
     appendUpdateSettings(parent) {
@@ -1589,6 +1648,7 @@ module.exports = class CallShare {
             const url=releaseFeedUrl(input.value);
             if(input.value.trim()&&!url){this.toast('Informe o endereço HTTPS do arquivo de versões.','warning');return;}
             if(url!==this.feed){
+                this.dismissReleaseNotice?.();this.dismissReleaseNotice=null;this.releaseNoticeVersion=null;
                 this.feed=url;this.feedCache={};this.feedMessage='';this.feedTask=null;clearTimeout(this.feedTimer);
                 BdApi.Data.save(NAME,'updateFeed',url);BdApi.Data.save(NAME,'updateCheck',{});
             }
@@ -1612,7 +1672,7 @@ module.exports = class CallShare {
             clearTimeout(this.feedTimer);
             this.feedTimer=setTimeout(()=>this.checkRelease(),ms);
         };
-        if(!manual && age>=0 && age<day){schedule(day-age);this.renderMaintenance();return;}
+        if(!manual && age>=0 && age<day){schedule(day-age);this.renderMaintenance();this.announceRelease();return;}
         const request={};
         this.feedTask=request;this.feedMessage='Consultando versões…';this.renderMaintenance();
         const current=()=>this.running&&generation===this.generation&&this.feed===url&&this.feedTask===request;
@@ -1624,8 +1684,8 @@ module.exports = class CallShare {
             const {version}=JSON.parse(raw);
             if(!releaseNumber(version))throw Error();
             if(!current())return;
-            if(newerRelease(version,VERSION)&&(manual||version!==cached.version))this.toast('CallShare '+version+' disponível. Atualize pelo pacote completo.');
             this.feedCache={url,version,checkedAt:Date.now()};
+            this.announceRelease();
             this.feedMessage=newerRelease(version,VERSION)?'Disponível · '+version:'Você tem a versão mais recente deste canal.';
         }catch{
             if(!current())return;
@@ -1639,13 +1699,13 @@ module.exports = class CallShare {
     }
 
     canInstallNativeHelper() {
-        return !this.sessionRoute&&!this.routeDisableBusy&&!this.routeSwitchBusy&&!this.autoBusy;
+        return !this.packageJob&&!this.sessionRoute&&!this.routeDisableBusy&&!this.routeSwitchBusy&&!this.autoBusy;
     }
 
     async installNativeHelper() {
         if(!this.canInstallNativeHelper())return this.toast('Pause o CallShare e aguarde o túnel encerrar antes de instalar ou reparar o auxiliar.','warning');
         try { const fs=require("fs"),path=require("path"),crypto=require("crypto"),electron=require("electron");
-            const file=path.join(BdApi.Plugins.folder,"CallShare-runtime","CallShare-install.exe");
+            const file=path.join(runtimeForVersion(fs,path,BdApi.Plugins.folder,VERSION),"CallShare-install.exe");
             if(!fs.existsSync(file)||crypto.createHash("sha256").update(fs.readFileSync(file,null)).digest("hex")!=="29c6afc005f8ebacdb17117459fb517e3b0e2bb12f82f7595c84f3fb52b9a839")throw Error();
             const result=await electron.shell.openPath(file);if(typeof result==="string"&&result)throw Error();
             if(!this.running)return;
@@ -1657,7 +1717,7 @@ module.exports = class CallShare {
     }
 
     async enableSessionRoute(preserveVoice=false,{automatic=false,allowStreams=false,standby=false}={}) {
-        if (!this.running || this.sessionRoute) return;
+        if (!this.running || this.sessionRoute || this.packageJob) return;
         this.syncConnectionHooks();
         const plan=preserveVoice?this.routeDiagnostics.plan({allowStreams,allowPendingStreams:standby}):null;
         if(plan)plan.channel=this.voiceChannelId();
@@ -1746,9 +1806,9 @@ module.exports = class CallShare {
                 CS_PROBE_DNS:"A rota conectou, mas o nome do gateway não foi resolvido.",CS_PROBE_CONNECT:"O auxiliar não abriu a conexão local de teste.",CS_PROBE_TIMEOUT:"O teste do gateway excedeu o prazo.",CS_PROBE_REFUSED:"A conexão TCP ao gateway foi recusada.",CS_PROBE_TARGET:"A rota não abriu a conexão TCP ao gateway.",CS_PROBE_TLS:"O teste TLS do gateway falhou.",CS_PROBE_HTTP:"A troca WebSocket do gateway não foi confirmada. O relatório inclui o código HTTP quando disponível.",CS_PROXY_AUTH:"A autenticação do proxy local falhou.",CS_PROXY_PROTOCOL:"O proxy local respondeu com um formato inesperado.",CS_PROXY_NOT_READY:"O proxy isolado ainda não está disponível.",
                 CS_BD_API:"A API necessária do BetterDiscord não está disponível nesta versão.",
                 CS_HELPER_BUSY:"O auxiliar anterior ainda está encerrando. Aguarde e use Reconectar.",
-                CS_HELPER_MISSING:"Auxiliar ausente. Copie a pasta CallShare-runtime completa da versão 0.16.0.",
+                CS_HELPER_MISSING:`Auxiliar ausente. Copie a pasta CallShare-runtime completa do pacote ${VERSION}.`,
                 CS_HELPER_READ:"O BetterDiscord não conseguiu ler o auxiliar integrado.",
-                CS_HELPER_HASH:"O auxiliar não corresponde à versão 0.16.0. Copie novamente o pacote completo.",
+                CS_HELPER_HASH:`O auxiliar diverge do arquivo esperado. Copie novamente o pacote completo ${VERSION}.`,
                 CS_HELPER_LAUNCH:"O Windows não conseguiu abrir o auxiliar integrado.",
                 CS_HELPER_TIMEOUT:"O auxiliar não respondeu em 15 segundos.",
                 CS_HELPER_CONTROL:"A comunicação local com o auxiliar falhou.",
@@ -1835,7 +1895,7 @@ module.exports = class CallShare {
 };
 
 
-// Release notices are informational. A feed can supply only a version number.
+// The renderer reads versions. Only the official updater can install a package.
 const releaseNumber = value => typeof value === 'string' && /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(value);
 function newerRelease(candidate, installed) {
     if (!releaseNumber(candidate) || !releaseNumber(installed)) return false;
@@ -1855,8 +1915,13 @@ function smallReleaseFile(fs, file) {
     if (!Number.isInteger(size) || size < 1 || size > 4096) throw Error('metadata');
     return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
+function runtimeForVersion(fs,path,folder,version) {
+    const base=path.join(folder,'CallShare-runtime');
+    const side=path.join(base,'releases',version);
+    return fs.existsSync(path.join(side,'.callshare-package'))?side:base;
+}
 function inspectInstallation({fs, path, folder, programFiles, version, serviceVersion}) {
-    const runtime = path.join(folder, 'CallShare-runtime');
+    const runtime = runtimeForVersion(fs,path,folder,version);
     for (const name of ['CallShare-helper.exe','CallShare-install.exe']) {
         if (!fs.existsSync(path.join(runtime, name))) return 'package';
     }

@@ -1,4 +1,4 @@
-// Release notices are informational. A feed can supply only a version number.
+// The renderer reads versions. Only the official updater can install a package.
 const releaseNumber = value => typeof value === 'string' && /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(value);
 function newerRelease(candidate, installed) {
     if (!releaseNumber(candidate) || !releaseNumber(installed)) return false;
@@ -18,8 +18,13 @@ function smallReleaseFile(fs, file) {
     if (!Number.isInteger(size) || size < 1 || size > 4096) throw Error('metadata');
     return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
+function runtimeForVersion(fs,path,folder,version) {
+    const base=path.join(folder,'CallShare-runtime');
+    const side=path.join(base,'releases',version);
+    return fs.existsSync(path.join(side,'.callshare-package'))?side:base;
+}
 function inspectInstallation({fs, path, folder, programFiles, version, serviceVersion}) {
-    const runtime = path.join(folder, 'CallShare-runtime');
+    const runtime = runtimeForVersion(fs,path,folder,version);
     for (const name of ['CallShare-helper.exe','CallShare-install.exe']) {
         if (!fs.existsSync(path.join(runtime, name))) return 'package';
     }
@@ -44,4 +49,4 @@ const setupNotices = {
     upgrade:'Atualize o auxiliar do Windows para usar esta versão do CallShare.',
     unconfirmed:'A instalação do auxiliar ainda precisa de confirmação. No primeiro uso, instale-o antes de entrar na call.'
 };
-if(typeof module!=='undefined')module.exports={releaseNumber,newerRelease,releaseFeedUrl,inspectInstallation,setupNotices};
+if(typeof module!=='undefined')module.exports={releaseNumber,newerRelease,releaseFeedUrl,runtimeForVersion,inspectInstallation,setupNotices};

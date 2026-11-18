@@ -26,7 +26,8 @@ function run(file,args=[],env){cp.execFileSync(file,args,{cwd:release.workspace,
     if(sha(file)!==sha(path.join(nativeBase,name)))throw Error('Protected binary differs from verified build: '+name);
     if(nativeUpdate&&verifyStage)run(file,['--self-test'],env);
   }
-  if(build.reusedHelperFrom==='0.14.0'&&sha(path.join(stage,'CallShare-runtime/CallShare-helper.exe'))!==sha(path.join('outputs/CallShare-0.14.0/CallShare-runtime/CallShare-helper.exe')))throw Error('Reused helper changed');
+  if(build.reusedHelperFrom==='0.16.0'&&sha(path.join(stage,'CallShare-runtime/CallShare-helper.exe'))!==sha(path.join('outputs/CallShare-0.16.0/CallShare-runtime/CallShare-helper.exe')))throw Error('Reused helper changed');
+  if(build.updaterSourceSha256!==sha('work/next/PackageUpdate.cs')||build.updaterSourceSha256!==sha(path.join(stage,'CallShare-runtime/source/PackageUpdate.cs')))throw Error('Updater source changed');
   run(process.execPath,['--check',path.join(stage,'CallShare.plugin.js')],env);
   const log=path.resolve('work/next/build/tests-'+release.version().replaceAll('.','')+'.log'),fd=fs.openSync(log,'w');
   try{cp.execFileSync(process.execPath,['--test','--test-timeout=20000',...fs.readdirSync('work/next').filter(n=>n.endsWith('.test.cjs')).map(n=>'work/next/'+n)],{env,windowsHide:true,stdio:['ignore',fd,fd]});}
