@@ -42,7 +42,7 @@ const release=require('./release-path.cjs');
   const transport=readRenderer('session-client.cjs').replace(/module\.exports=\{SessionClient\};\s*$/,'').replace('__CALLSHARE_HELPER_SHA256__',sha(exe));
   const inline=name=>readRenderer(name).replace(/if\(typeof module!==.*module\.exports=.*;\s*$/,'');
   const diagnostics=inline('route-diagnostics.cjs'),autoRoute=inline('auto-route.cjs'),providerMonitor=inline('provider-monitor.cjs'),bootstrap=inline('stream-bootstrap.cjs');
-  fs.writeFileSync(out+'/CallShare.plugin.js',client+'\n\n'+inline('session-contract.cjs')+'\n\n'+inline('panel-state.cjs')+'\n\n'+autoRoute+'\n\n'+providerMonitor+'\n\n'+bootstrap+'\n\n'+diagnostics+'\n\n'+transport);
+  fs.writeFileSync(out+'/CallShare.plugin.js',client+'\n\n'+inline('maintenance.cjs')+'\n\n'+inline('session-contract.cjs')+'\n\n'+inline('panel-state.cjs')+'\n\n'+autoRoute+'\n\n'+providerMonitor+'\n\n'+bootstrap+'\n\n'+diagnostics+'\n\n'+transport);
   cp.execFileSync(process.execPath,['--check',out+'/CallShare.plugin.js'],{stdio:'inherit'});
   fs.copyFileSync('work/node-LICENSE.txt',runtime+'/docs/node-LICENSE.txt');
   fs.copyFileSync('work/openvpn-build/cab/license.txt',runtime+'/docs/openvpn-LICENSE.txt');

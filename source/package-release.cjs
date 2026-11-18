@@ -3,6 +3,8 @@ const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_pro
 const uiVersion=/const VERSION = "([^"]+)"/.exec(fs.readFileSync('work/next/CallShare-client.js','utf8'))[1];
 const root=require('./release-path.cjs').mutableRelease(),runtime=path.join(root,'CallShare-runtime'),source=path.join(runtime,'source');
 const copy=(from,to)=>{fs.mkdirSync(path.dirname(to),{recursive:true});fs.copyFileSync(from,to);};
+fs.writeFileSync(path.join(runtime,'release.json'),JSON.stringify({version:uiVersion})+'\n');
+copy('work/next/maintenance.cjs',path.join(source,'maintenance.cjs'));
 for(const name of ['LEIA-ME.md','Instalar-CallShare.ps1'])copy(path.join('work/next',name),path.join(root,name));
 copy('outputs/LICENSE-CallShare.txt',path.join(root,'LICENSE-CallShare.txt'));
 copy('work/next/THIRD-PARTY.md',path.join(runtime,'docs/THIRD-PARTY.md'));

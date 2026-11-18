@@ -1,7 +1,7 @@
 // Exercises the actual SEA executable without /start, UAC, driver or network changes.
 const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process');
 (async()=>{
-  const root=path.resolve('work/smoke-runtime-0.15.2');fs.mkdirSync(root,{recursive:true});
+  const root=path.resolve('work/smoke-runtime-0.16.0');fs.mkdirSync(root,{recursive:true});
   const exe=path.join(root,'CallShare-helper.exe');fs.copyFileSync(require('./release-path.cjs').releasePath()+'/CallShare-runtime/CallShare-helper.exe',exe);
   const endpointFile=path.join(root,'control/endpoint.json');
   let previousInstance;try{previousInstance=JSON.parse(fs.readFileSync(endpointFile)).instance;}catch{}
@@ -9,7 +9,7 @@ const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_pro
   try{
     const deadline=Date.now()+10000;let endpoint;
     while(Date.now()<deadline){try{const current=JSON.parse(fs.readFileSync(endpointFile));if(current.instance!==previousInstance){endpoint=current;break;}}catch{}await new Promise(r=>setTimeout(r,100));}
-    if(!endpoint||endpoint.version!=='0.15.2')throw Error('No current endpoint');
+    if(!endpoint||endpoint.version!=='0.16.0')throw Error('No current endpoint');
     const url='http://127.0.0.1:'+endpoint.controlPort;
     const refused=await fetch(url+'/status');if(refused.status!==403)throw Error('Unauthenticated request accepted');
     const headers={Authorization:'Bearer '+endpoint.token};

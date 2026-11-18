@@ -20,7 +20,7 @@ function run(file,args=[],env){cp.execFileSync(file,args,{cwd:release.workspace,
   if(sha(path.join(stage,'CallShare-runtime/CallShare-helper.exe'))!==build.helperSha256)throw Error('Helper binary changed');
   const manifest=JSON.parse(fs.readFileSync(path.join(stage,'SHA256.json')));if(manifest.version!==release.version())throw Error('Wrong manifest version');
   for(const [name,hash] of Object.entries(manifest.files))if(sha(path.join(stage,name))!==hash)throw Error('Package file changed: '+name);
-  const nativeBase=nativeUpdate?'work/next/build':'outputs/CallShare-0.14.0/CallShare-runtime';
+  const nativeBase=nativeUpdate?'work/next/build':'outputs/CallShare-0.15.2/CallShare-runtime';
   for(const name of ['CallShare-install.exe','CallShare-vpn-worker.exe','CallShareBroker.exe']){
     const file=path.join(stage,'CallShare-runtime',name);
     if(sha(file)!==sha(path.join(nativeBase,name)))throw Error('Protected binary differs from verified build: '+name);

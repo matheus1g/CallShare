@@ -1,15 +1,17 @@
 /**
  * @name CallShare
  * @author Mathe
- * @version 0.15.2
+ * @version 0.16.0
  * @description Prepara uma rota nativa para o Discord. Auxiliar instalado uma vez; sem nova autorização a cada preparação.
  */
 
 // Original implementation. This is an investigation build, not a confirmed bypass.
 const NAME = "CallShare";
-const VERSION = "0.15.2";
+const VERSION = "0.16.0";
 const BACKEND_VERSION = "0.13.4";
-const HELPER_VERSION = "0.15.2";
+const HELPER_VERSION = "0.16.0";
+const PROJECT_RELEASES = 'https://github.com/matheus1g/CallShare/releases/latest';
+const PROJECT_FEED = 'https://raw.githubusercontent.com/matheus1g/CallShare/main/release.json';
 const VIDEO_CODECS = new Set(["H264", "H265", "VP8", "VP9", "AV1", "AV1X"]);
 const MEDIA_EVENTS = ["video-codec-error", "video-encoder-fallback", "video-decoder-fallback",
     "first-frame-encrypted-stats", "first-frame-stats", "mls-failure", "secure-frames-update"];
@@ -30,6 +32,12 @@ module.exports = class CallShare {
     start() {
         this.generation = (this.generation || 0) + 1;
         this.running = true;
+        this.setupState = null;
+        this.setupCheckedAt = null;
+        this.feed = releaseFeedUrl(BdApi.Data.load(NAME,'updateFeed') ?? PROJECT_FEED);
+        this.feedCache = BdApi.Data.load(NAME,'updateCheck') || {};
+        this.feedTask = null;
+        this.feedMessage = '';
         this.sessionRoute = null;
         this.routeStatus = "desligada";
         this.routeProgress=[];
@@ -84,6 +92,9 @@ module.exports = class CallShare {
         this.streamStore = this.rtcStore = this.regionStore = this.gatewayTarget = null;
         this.streamRtcStore = this.statsStore = null;
         this.guard = this.dispatcher = this.readConfig = null;
+        this.discoveryDelay = 3000;
+        this.nextModuleScan = 0;
+        this.discoveryCall = null;
         this.nativePatches = [];
         this.cleanups = [];
         this.pending = new Set();
@@ -153,7 +164,6 @@ module.exports = class CallShare {
             #${PANEL} .cs-version{font-size:11px;color:var(--text-subtle,var(--text-muted))}
             #${PANEL} .cs-logo{color:var(--text-link,var(--brand-500))}
             #${PANEL} .cs-header .cs-close{float:none;order:3}
-            #${PANEL} .cs-header .cs-settings{order:2;display:flex;align-items:center;justify-content:center;padding:7px}
             #${PANEL} .cs-tabs{display:flex;gap:4px;margin:12px 0}
             #${PANEL} .cs-tabs button{flex:1;border-color:transparent;background:transparent;color:var(--text-subtle,var(--text-muted));padding:7px 10px}
             #${PANEL} .cs-tabs button[aria-selected="true"]{background:var(--background-mod-subtle,var(--control-secondary-background-default));color:var(--text-strong,var(--text-default));border-color:var(--border-subtle,var(--border-muted))}
@@ -184,7 +194,11 @@ module.exports = class CallShare {
             #${PANEL} .cs-status[data-tone="ready"] .cs-status-icon{color:var(--status-positive,var(--text-positive))}
             #${PANEL} .cs-automatic{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px}
             #${PANEL} .cs-automatic input{order:2;width:17px;height:17px;accent-color:var(--brand-500)}
-            #${PANEL} .cs-diagnostic-link{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;margin-top:16px;background:transparent;border-color:transparent;border-top-color:var(--border-subtle,var(--border-muted));border-radius:0;padding:13px 0 3px;text-align:left;font-size:12px}
+            #${PANEL} .cs-notice{margin:10px 0;padding:10px 12px;border-inline-start:3px solid var(--status-warning,var(--text-link));border-radius:6px;background:var(--background-mod-subtle,var(--background-secondary));font-size:13px}
+            #${PANEL} .cs-notice p{margin:0 0 6px}
+            #${PANEL} .cs-notice[hidden],#${PANEL} .cs-notice button[hidden]{display:none}
+            #${PANEL} .cs-feed{box-sizing:border-box;width:100%;padding:7px;color:var(--text-default);background:var(--background-base-low,var(--background-secondary));border:1px solid var(--border-muted);border-radius:5px}
+            #${PANEL} .cs-mode-footer button{margin-inline-start:auto}
             #${PANEL} .cs-mode-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border-subtle,var(--border-muted))}
             #${PANEL} .cs-mode-footer button{font-size:12px;padding:6px 9px}
             #${PANEL} .cs-mode-footer span{font-size:11px;color:var(--text-subtle,var(--text-muted))}
@@ -202,7 +216,7 @@ module.exports = class CallShare {
             if (!this.running) return;
             this.discover();
             this.updateToolbar();
-            this.captureRouteDiagnostics();
+            if(this.sessionRoute || this.voiceChannelId() || this.streamConnections().length)this.captureRouteDiagnostics();
             this.tickAutomatic();
             if ((this.streamConnections().length || (this.sessionRoute && this.voiceChannelId())) && Date.now() - this.lastSampleTime >= 5000) {
                 this.lastSampleTime = Date.now();
@@ -213,6 +227,13 @@ module.exports = class CallShare {
         this.tickAutomatic();
         this.updateToolbar();
         this.toast(this.autoPolicy.enabled?(this.routeStrategy==='on-demand'?"CallShare: o túnel será preparado em espera ao entrar na call.":"CallShare automático: aguardando a voz conectar."):"CallShare pronto. O modo automático está disponível no menu.");
+        const maintenanceTimer=setTimeout(()=>{
+            this.pending.delete(maintenanceTimer);
+            if(!this.running)return;
+            this.checkInstallation(true);
+            this.checkRelease();
+        },1000);
+        this.pending.add(maintenanceTimer);
     }
 
     stop() {
@@ -228,6 +249,8 @@ module.exports = class CallShare {
         this.record("plugin desativado");
         this.running = false;
         clearInterval(this.timer);
+        clearTimeout(this.feedTimer);
+        window.removeEventListener?.('focus',this.afterInstaller);
         clearTimeout(this.mountTimer);
         for (const timer of this.pending) clearTimeout(timer);
         this.pending.clear();
@@ -273,9 +296,25 @@ module.exports = class CallShare {
         this.rtcStore ||= this.getStore("RTCConnectionStore");
         this.streamRtcStore ||= this.getStore("StreamRTCConnectionStore");
         this.statsStore ||= this.getStore("MediaEngineStatsStore");
+        if (!this.regionStore) this.attachRegionStore(this.getStore("RTCRegionStore"));
+        const call = this.voiceChannelId();
+        if (call !== this.discoveryCall) {
+            this.discoveryCall = call;
+            this.nextModuleScan = 0;
+            this.discoveryDelay = 3000;
+        }
+        if (Date.now() >= this.nextModuleScan && (!this.guard || !this.dispatcher || !this.gatewayTarget)) {
+            this.findMissingModules();
+            this.nextModuleScan = Date.now() + this.discoveryDelay;
+            this.discoveryDelay = Math.min(60000, this.discoveryDelay * 2);
+        }
+        this.applyNativePatch();
+        this.syncConnectionHooks();
+    }
+
+    findMissingModules() {
         this.guard ||= this.getModule(m => m?.definition?.name === GUARD &&
             typeof m.getConfig === "function" && typeof m.useConfig === "function");
-        if (!this.regionStore) this.attachRegionStore(this.getStore("RTCRegionStore"));
         if (!this.gatewayTarget) {
             const socket = this.getModule(m => typeof m?.streamCreate === "function" && typeof m?.streamWatch === "function");
             const socketClass = socket ? null : this.getModule(m => typeof m?.prototype?.streamCreate === "function" && typeof m?.prototype?.streamWatch === "function");
@@ -283,8 +322,6 @@ module.exports = class CallShare {
         }
         if (!this.dispatcher) this.attachDispatcher(this.getModule(m =>
             typeof m?.dispatch === "function" && typeof m?.subscribe === "function" && typeof m?.unsubscribe === "function"));
-        this.applyNativePatch();
-        this.syncConnectionHooks();
     }
 
     attachRegionStore(store) {
@@ -1102,7 +1139,6 @@ module.exports = class CallShare {
 
     icon(kind) {
         const paths={screen:'<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/>',
-            settings:'<path d="M4 7h7m6 0h3M4 17h3m6 0h7"/><circle cx="14" cy="7" r="3"/><circle cx="10" cy="17" r="3"/>',
             check:'<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',warning:'<path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v4m0 4h.01"/>',
             spinner:'<path d="M21 12a9 9 0 1 1-9-9"/>',pause:'<path d="M9 5v14M15 5v14"/>',arrow:'<path d="m9 5 7 7-7 7"/>',minus:'<path d="M5 12h14"/>'};
         const node=this.element('span',null,'cs-icon'+(kind==='spinner'?' cs-spinner':''));node.setAttribute('aria-hidden','true');
@@ -1126,6 +1162,8 @@ module.exports = class CallShare {
         this.routeShortcutAction=presentation.shortcutAction;
         setText(this.routeShortcut,shortcut);
         if(this.routeShortcut){this.routeShortcut.disabled=!call||presentation.tone==='ready'||presentation.tone==='working';this.routeShortcut.title=presentation.description;this.routeShortcut.setAttribute('aria-label',presentation.shortcutAction==='panel'?'Abrir orientações sobre a transmissão':shortcut==='Reconectar'?'Reconectar CallShare':presentation.title);}
+        if(!this.panelCard)return;
+        this.renderMaintenance();
         const detailed=view.tone==='working'&&!view.normal&&(this.sessionRoute||this.routeDisableBusy)&&this.routeProgress.length?this.routeProgress.at(-1).label:view.description;
         const provider=this.sessionRoute?.lastStatus?.provider,providerName=provider?.selected?providerLabel(provider.selected):null;
         const panelDescription=this.devMode?detailed:view.tone==='working'&&!view.normal&&this.routeProgress.length&&this.sessionRoute?this.routeProgress.at(-1).label:presentation.description;
@@ -1206,6 +1244,7 @@ module.exports = class CallShare {
     closePanel({restoreFocus=true}={}) {
         this.panelCleanup?.();this.panelCleanup=null;
         document.getElementById(PANEL)?.remove();this.menuButton?.setAttribute('aria-expanded','false');
+        this.setupNotice=this.setupText=this.setupAction=this.releaseNotice=this.releaseText=this.releaseLink=this.feedStatus=null;
         for(const key of ['panelTitle','panelDescription','panelCard','panelProgress','panelProviderInfo','panelProviderSession','panelProviderSummary','panelConnect','panelRestore','panelInstall','panelStateIcon','panelRows','panelTabs','panelPages','panelAdvanced','panelDevButton','panelAutomatic','panelContinuous'])this[key]=null;
         if(restoreFocus)(this.panelInvoker?.isConnected===false?this.menuButton:this.panelInvoker||this.menuButton)?.focus?.();this.panelInvoker=null;
     }
@@ -1282,6 +1321,7 @@ module.exports = class CallShare {
         if(compact)advanced.append(this.element('h3','Instalação e manutenção','cs-section-title'));
         this.panelInstall=this.button('Instalar/atualizar auxiliar',()=>this.installNativeHelper());
         const setup=this.element('div',null,'cs-actions');setup.append(this.panelInstall,this.button('Preparação completa · alternativa',()=>this.enableSessionRoute()));advanced.append(setup);
+        this.appendUpdateSettings(advanced);
         advanced.append(this.element('p','Esse botão instala ou repara o serviço do Windows incluído em CallShare-runtime. Para atualizar somente o plugin e o helper, copie os arquivos do pacote. Com o túnel em uso ou em preparação, pause o CallShare e aguarde o encerramento para habilitar a instalação.','cs-muted'));
         const explanations=compact?this.element('details'):advanced;if(compact)explanations.append(this.element('summary','Como a conexão funciona'));
         const routeText=this.element('p','Detalhe da conexão: '+this.routeStatus);routeText.id='callshare-route-state';explanations.append(routeText);
@@ -1315,8 +1355,17 @@ module.exports = class CallShare {
         const header=this.element('div',null,'cs-header'),heading=this.element('div',null,'cs-heading'),logo=this.icon('screen');logo.className+=' cs-logo';
         heading.append(logo,this.element('h2','CallShare'),this.element('span','v'+VERSION,'cs-version'));
         const close=this.button('Fechar',()=>this.closePanel(),'cs-close');
-        const settings=this.button('',()=>{if(this.devMode){this.panelAdvanced.open=true;this.panelAdvanced.scrollIntoView?.({block:'nearest'});}else this.selectPanelTab('advanced',{focus:true});},'cs-settings');
-        settings.append(this.icon('settings'));settings.setAttribute('aria-label','Abrir configurações avançadas');settings.title='Configurações avançadas';header.append(heading,close,settings);panel.append(header);
+        header.append(heading,close);panel.append(header);
+        this.setupNotice=this.element('div',null,'cs-notice');
+        this.setupText=this.element('p');
+        this.setupAction=this.button('Instalar auxiliar',()=>this.installNativeHelper());
+        this.setupNotice.append(this.setupText,this.setupAction);
+        this.releaseNotice=this.element('div',null,'cs-notice');
+        this.releaseNotice.setAttribute('role','status');
+        this.releaseText=this.element('p');this.releaseLink=this.element('a','Abrir versão no GitHub');
+        this.releaseLink.href=PROJECT_RELEASES;this.releaseLink.target='_blank';this.releaseLink.rel='noopener noreferrer';
+        this.releaseNotice.append(this.releaseText,this.releaseLink);
+        panel.append(this.setupNotice,this.releaseNotice);
         if(this.devMode){
             this.appendPanelOverview(panel);this.appendAutomaticControl(panel);this.appendReportCopies(panel);
             const advanced=this.element('details');advanced.append(this.element('summary','Configurações avançadas e diagnóstico'));this.panelAdvanced=advanced;this.appendAdvancedOptions(advanced);panel.append(advanced);
@@ -1335,8 +1384,8 @@ module.exports = class CallShare {
         const footer=this.element('div',null,'cs-mode-footer');this.panelDevButton=this.button(this.devMode?'Voltar ao modo simples':'Modo dev',()=>{
             this.devMode=!this.devMode;BdApi.Data.save(NAME,'devMode',this.devMode);this.panelTab='general';this.showPanel();this.panelDevButton?.focus?.();
         });this.panelDevButton.setAttribute('aria-pressed',String(this.devMode));this.panelDevButton.title='Alterna apenas a apresentação; mantém os mesmos diagnósticos e funcionamento.';
-        const footerLabel=this.devMode?this.element('span','Leitura técnica completa'):this.button('Diagnóstico',()=>this.selectPanelTab('advanced',{focus:true}));
-        footer.append(footerLabel,this.panelDevButton);panel.append(footer);
+        if(this.devMode)footer.append(this.element('span','Leitura técnica completa'));
+        footer.append(this.panelDevButton);panel.append(footer);
         this.popupHost().append(panel);this.menuButton?.setAttribute('aria-expanded','true');
         const keydown=event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();this.closePanel();}};
         const reposition=()=>this.positionPanel();document.addEventListener?.('keydown',keydown,true);window.addEventListener?.('resize',reposition);window.addEventListener?.('scroll',reposition,true);
@@ -1495,6 +1544,100 @@ module.exports = class CallShare {
         } catch (error) { throw Object.assign(new Error("API nativa do BetterDiscord indisponível"), {code:"CS_BD_API"}); }
     }
 
+    checkInstallation(notify=false) {
+        this.setupCheckedAt=Date.now();
+        let state;
+        try {
+            state=inspectInstallation({fs:require('fs'),path:require('path'),folder:BdApi.Plugins.folder,
+                programFiles:typeof process==='undefined'?null:process.env?.ProgramW6432||process.env?.ProgramFiles,
+                version:VERSION,serviceVersion:BACKEND_VERSION});
+        } catch { return; }
+        if(state==='unconfirmed' && this.sessionRoute?.lastVerifiedAt)state='ready';
+        this.setupState=state;
+        if(notify && setupNotices[state] && this.setupAnnounced!==state){
+            this.setupAnnounced=state;
+            this.toast('CallShare · '+setupNotices[state],'warning');
+        }
+        this.renderMaintenance();
+    }
+
+    renderMaintenance() {
+        const text=(node,value)=>{if(node && node.textContent!==value)node.textContent=value;};
+        if(this.setupNotice){
+            const state=this.setupState, message=setupNotices[state];
+            this.setupNotice.hidden=!message;
+            text(this.setupText,message||'');
+            this.setupAction.hidden=!message||state==='package';
+            text(this.setupAction,state==='upgrade'?'Atualizar auxiliar':'Instalar auxiliar');
+            this.setupAction.disabled=!this.canInstallNativeHelper();
+        }
+        const available=this.feed && this.feedCache?.url===this.feed && newerRelease(this.feedCache.version,VERSION);
+        if(this.releaseNotice){
+            this.releaseNotice.hidden=!available;
+            text(this.releaseText,available?'CallShare '+this.feedCache.version+' disponível. Atualize o JS e o runtime juntos pelo pacote da nova versão.':'');
+            this.releaseLink.hidden=this.feed!==PROJECT_FEED;
+        }
+        text(this.feedStatus,this.feedMessage || (this.feed?'Aviso automático uma vez por dia.':'Consulta automática desativada.'));
+    }
+
+    appendUpdateSettings(parent) {
+        const details=this.element('details'), input=this.element('input');
+        details.append(this.element('summary','Avisos de novas versões'));
+        input.type='url';input.className='cs-feed';input.value=this.feed||'';input.placeholder='https://…/release.json';
+        input.setAttribute('aria-label','Endereço HTTPS do arquivo de versões do CallShare');
+        const save=this.button('Salvar canal',()=>{
+            const url=releaseFeedUrl(input.value);
+            if(input.value.trim()&&!url){this.toast('Informe o endereço HTTPS do arquivo de versões.','warning');return;}
+            if(url!==this.feed){
+                this.feed=url;this.feedCache={};this.feedMessage='';this.feedTask=null;clearTimeout(this.feedTimer);
+                BdApi.Data.save(NAME,'updateFeed',url);BdApi.Data.save(NAME,'updateCheck',{});
+            }
+            if(url)this.checkRelease(true);else this.renderMaintenance();
+        });
+        const check=this.button('Verificar agora',()=>{
+            this.checkInstallation();
+            if(this.feed)this.checkRelease(true);else this.toast('Salve o endereço do canal para consultar novas versões.');
+        });
+        this.feedStatus=this.element('p',null,'cs-muted');this.feedStatus.setAttribute('role','status');
+        const actions=this.element('div',null,'cs-actions');actions.append(save,check);
+        details.append(input,actions,this.feedStatus);parent.append(details);
+    }
+
+    async checkRelease(manual=false) {
+        const url=this.feed, generation=this.generation, day=86400000;
+        if(!url||this.feedTask)return;
+        const cached=this.feedCache?.url===url?this.feedCache:{};
+        const age=Date.now()-cached.checkedAt;
+        const schedule=ms=>{
+            clearTimeout(this.feedTimer);
+            this.feedTimer=setTimeout(()=>this.checkRelease(),ms);
+        };
+        if(!manual && age>=0 && age<day){schedule(day-age);this.renderMaintenance();return;}
+        const request={};
+        this.feedTask=request;this.feedMessage='Consultando versões…';this.renderMaintenance();
+        const current=()=>this.running&&generation===this.generation&&this.feed===url&&this.feedTask===request;
+        try {
+            const response=await BdApi.Net.fetch(url,{method:'GET',timeout:6000,redirect:'error',credentials:'omit',cache:'no-store'});
+            if(response.status!==200||Number(response.headers?.get?.('content-length'))>4096)throw Error();
+            const raw=await response.text();
+            if(raw.length>4096)throw Error();
+            const {version}=JSON.parse(raw);
+            if(!releaseNumber(version))throw Error();
+            if(!current())return;
+            if(newerRelease(version,VERSION)&&(manual||version!==cached.version))this.toast('CallShare '+version+' disponível. Atualize pelo pacote completo.');
+            this.feedCache={url,version,checkedAt:Date.now()};
+            this.feedMessage=newerRelease(version,VERSION)?'Disponível · '+version:'Você tem a versão mais recente deste canal.';
+        }catch{
+            if(!current())return;
+            this.feedCache={...cached,url,checkedAt:Date.now()};
+            this.feedMessage='Consulta indisponível. Você pode tentar novamente.';
+        }finally{
+            if(current()){
+                this.feedTask=null;BdApi.Data.save(NAME,'updateCheck',this.feedCache);schedule(day);this.renderMaintenance();
+            }
+        }
+    }
+
     canInstallNativeHelper() {
         return !this.sessionRoute&&!this.routeDisableBusy&&!this.routeSwitchBusy&&!this.autoBusy;
     }
@@ -1505,6 +1648,10 @@ module.exports = class CallShare {
             const file=path.join(BdApi.Plugins.folder,"CallShare-runtime","CallShare-install.exe");
             if(!fs.existsSync(file)||crypto.createHash("sha256").update(fs.readFileSync(file,null)).digest("hex")!=="29c6afc005f8ebacdb17117459fb517e3b0e2bb12f82f7595c84f3fb52b9a839")throw Error();
             const result=await electron.shell.openPath(file);if(typeof result==="string"&&result)throw Error();
+            if(!this.running)return;
+            if(this.afterInstaller)window.removeEventListener?.('focus',this.afterInstaller);
+            this.afterInstaller=()=>{if(this.running)this.checkInstallation();};
+            window.addEventListener?.('focus',this.afterInstaller,{once:true});
             this.toast("Conclua a instalação autorizada pelo Windows. Depois volte ao painel e use a ação de preparar no painel.");
         } catch { this.toast(`Não foi possível abrir o instalador verificado. Copie o pacote completo ${VERSION}.`,"warning"); }
     }
@@ -1534,6 +1681,7 @@ module.exports = class CallShare {
             this.saveRouteEvidence();
             await route.start(preserveVoice?{voiceBypass:plan.voice,...(standby?{standby:true}:{})}:{});
             if (!this.running || generation !== this.generation || this.sessionRoute !== route) { route.stop()?.catch?.(()=>{}); return; }
+            this.setupState='ready';this.renderMaintenance();
             if(preserveVoice){
                 this.syncConnectionHooks();
                 if(this.voicePreservation!==plan)throw Object.assign(new Error('CS_VOICE_ENDPOINT'),{code:'CS_VOICE_ENDPOINT'});
@@ -1598,9 +1746,9 @@ module.exports = class CallShare {
                 CS_PROBE_DNS:"A rota conectou, mas o nome do gateway não foi resolvido.",CS_PROBE_CONNECT:"O auxiliar não abriu a conexão local de teste.",CS_PROBE_TIMEOUT:"O teste do gateway excedeu o prazo.",CS_PROBE_REFUSED:"A conexão TCP ao gateway foi recusada.",CS_PROBE_TARGET:"A rota não abriu a conexão TCP ao gateway.",CS_PROBE_TLS:"O teste TLS do gateway falhou.",CS_PROBE_HTTP:"A troca WebSocket do gateway não foi confirmada. O relatório inclui o código HTTP quando disponível.",CS_PROXY_AUTH:"A autenticação do proxy local falhou.",CS_PROXY_PROTOCOL:"O proxy local respondeu com um formato inesperado.",CS_PROXY_NOT_READY:"O proxy isolado ainda não está disponível.",
                 CS_BD_API:"A API necessária do BetterDiscord não está disponível nesta versão.",
                 CS_HELPER_BUSY:"O auxiliar anterior ainda está encerrando. Aguarde e use Reconectar.",
-                CS_HELPER_MISSING:"Auxiliar ausente. Copie a pasta CallShare-runtime completa da versão 0.15.2.",
+                CS_HELPER_MISSING:"Auxiliar ausente. Copie a pasta CallShare-runtime completa da versão 0.16.0.",
                 CS_HELPER_READ:"O BetterDiscord não conseguiu ler o auxiliar integrado.",
-                CS_HELPER_HASH:"O auxiliar não corresponde à versão 0.15.2. Copie novamente o pacote completo.",
+                CS_HELPER_HASH:"O auxiliar não corresponde à versão 0.16.0. Copie novamente o pacote completo.",
                 CS_HELPER_LAUNCH:"O Windows não conseguiu abrir o auxiliar integrado.",
                 CS_HELPER_TIMEOUT:"O auxiliar não respondeu em 15 segundos.",
                 CS_HELPER_CONTROL:"A comunicação local com o auxiliar falhou.",
@@ -1639,6 +1787,10 @@ module.exports = class CallShare {
                 "read-failed":"Não foi possível ler as rotas do Windows. Copie o relatório."
             }[this.lastRouteEvidence?.routeProof?.reason]:null;
             this.updateRouteStatus(`falha ${code}; ${clean?"restauração concluída":"restauração não confirmada"}`);
+            if(['CS_HELPER_HASH','CS_HELPER_MISSING','CS_HELPER_PROTOCOL'].includes(code))this.setupState='package';
+            if(code==='CS_SERVICE_MISSING')this.setupState='install';
+            if(code==='CS_SERVICE_PROTOCOL'||code==='CS_WORKER_PROTOCOL')this.setupState='upgrade';
+            this.renderMaintenance();
             this.record("preparação da rota falhou",code);
             if(!automatic)this.toast(`${routeMessage||messages[code]} Código: ${code}. ${clean?"A preparação foi encerrada.":"Use Voltar à conexão normal e copie o relatório."}`, "warning");
         }
@@ -1680,6 +1832,54 @@ module.exports = class CallShare {
             this.button("Abrir painel do CallShare", () => this.showPanel()));
         return panel;
     }
+};
+
+
+// Release notices are informational. A feed can supply only a version number.
+const releaseNumber = value => typeof value === 'string' && /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(value);
+function newerRelease(candidate, installed) {
+    if (!releaseNumber(candidate) || !releaseNumber(installed)) return false;
+    const next = candidate.split('.').map(Number), current = installed.split('.').map(Number);
+    for (let i = 0; i < 3; i++) if (next[i] !== current[i]) return next[i] > current[i];
+    return false;
+}
+function releaseFeedUrl(value) {
+    if (typeof value !== 'string' || !value.trim() || value.length > 2048) return '';
+    try {
+        const url = new URL(value.trim());
+        return url.protocol === 'https:' && !url.username && !url.password && !url.hash ? url.href : '';
+    } catch { return ''; }
+}
+function smallReleaseFile(fs, file) {
+    const size = fs.statSync(file).size;
+    if (!Number.isInteger(size) || size < 1 || size > 4096) throw Error('metadata');
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+function inspectInstallation({fs, path, folder, programFiles, version, serviceVersion}) {
+    const runtime = path.join(folder, 'CallShare-runtime');
+    for (const name of ['CallShare-helper.exe','CallShare-install.exe']) {
+        if (!fs.existsSync(path.join(runtime, name))) return 'package';
+    }
+    try {
+        if (smallReleaseFile(fs, path.join(runtime,'release.json')).version !== version) return 'package';
+    } catch { return 'package'; }
+    // The renderer may hide the Windows environment. An absent file at the usual
+    // location then warrants a first-use prompt, not a definitive missing-service claim.
+    const service = path.join(programFiles || 'C:\\Program Files','CallShare');
+    if (!['CallShareBroker.exe','CallShare-vpn-worker.exe'].every(n => fs.existsSync(path.join(service,n)))) {
+        return programFiles ? 'install' : 'unconfirmed';
+    }
+    try {
+        const actual = smallReleaseFile(fs,path.join(service,'CallShare-broker-status.json')).brokerVersion;
+        if (releaseNumber(actual)) return actual === serviceVersion ? 'ready' : 'upgrade';
+    } catch {}
+    return 'unconfirmed';
+}
+const setupNotices = {
+    package:'Copie o JS e a pasta CallShare-runtime do mesmo pacote para a pasta de plugins do BetterDiscord.',
+    install:'Instale o auxiliar do Windows para preparar sua primeira transmissão.',
+    upgrade:'Atualize o auxiliar do Windows para usar esta versão do CallShare.',
+    unconfirmed:'A instalação do auxiliar ainda precisa de confirmação. No primeiro uso, instale-o antes de entrar na call.'
 };
 
 
@@ -2202,18 +2402,31 @@ class SessionClient {
             const file=this.path.join(this.root,'control','endpoint.json');
             if(this.fs.statSync(file).size>4096)return null;
             const value=JSON.parse(this.fs.readFileSync(file,'utf8'));
-            if(value.protocol!==1||value.version!=='0.15.2'||!Number.isInteger(value.controlPort)||value.controlPort<1024||value.controlPort>65535||
+            if(value.protocol!==1||value.version!=='0.16.0'||!Number.isInteger(value.controlPort)||value.controlPort<1024||value.controlPort>65535||
                 !/^[a-f0-9]{64}$/.test(value.instance)||!/^[a-f0-9]{64}$/.test(value.token))return null;
             return value;
         }catch{return null;}
     }
     async command(endpoint,path,method='GET'){
         const startHeaders=method==='POST'&&/^\/(?:start|start-voice|warm-voice)(?:\/|$)/.test(path)&&Number.isSafeInteger(this.prepareDeadline)?{'X-CallShare-Deadline':String(this.prepareDeadline)}:{};
+        const previous=path==='/status'&&this.endpoint?.instance===endpoint.instance?this.lastStatus:null;
+        const headers={Authorization:`Bearer ${endpoint.token}`,...startHeaders};
+        for(const key of ['network','networkBefore']){
+            const at=previous?.[key]?.at;
+            if(Number.isSafeInteger(at)&&at>0)headers['x-callshare-'+key.toLowerCase()]=String(at);
+        }
         const response=await this.fetch(`http://127.0.0.1:${endpoint.controlPort}${path}`,{
-            method,headers:{Authorization:`Bearer ${endpoint.token}`,...startHeaders},timeout:path==='/stop'?95000:path==='/provider-check'?50000:['/pause','/resume'].includes(path)?30000:2500,redirect:'error'});
+            method,headers,timeout:path==='/stop'?95000:path==='/provider-check'?50000:['/pause','/resume'].includes(path)?30000:2500,redirect:'error'});
         if(!response||response.status<200||response.status>=300)throw this.error('CS_HELPER_CONTROL');
         const result=await response.json();
-        if(result.protocol!==1||result.version!=='0.15.2'||result.instance!==endpoint.instance)throw this.error('CS_HELPER_PROTOCOL');
+        if(result.protocol!==1||result.version!=='0.16.0'||result.instance!==endpoint.instance)throw this.error('CS_HELPER_PROTOCOL');
+        for(const key of ['network','networkBefore']){
+            const unchanged=result[key+'UnchangedAt'];
+            if(unchanged!==undefined){
+                if(!Number.isSafeInteger(unchanged)||unchanged<=0||previous?.[key]?.at!==unchanged)throw this.error('CS_HELPER_PROTOCOL');
+                result[key]=previous[key];
+            }
+        }
         return result;
     }
     async available(){
@@ -2246,7 +2459,7 @@ class SessionClient {
         if(this.stopped)throw this.error('CS_CANCELLED');
         this.state('verificando auxiliar integrado');
         const file=this.path.join(this.root,'CallShare-helper.exe');
-        const expected='90a030dcf72d0b4692fe1b4a832f809a0e0d27446cfb9be78533b9554533142d';
+        const expected='6c7cf36ff4ab937d07c9a3eb85fdbdfcc64ac401d17ca0d8f12e909d2b151f44';
         if(!this.fs.existsSync(file))throw this.error('CS_HELPER_MISSING');
         let actual;
         // BetterDiscord defaults readFileSync to UTF-8, unlike Node. Request binary explicitly.

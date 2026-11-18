@@ -10,10 +10,10 @@ const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_pro
     try{
         const deadline=Date.now()+10000;
         while(Date.now()<deadline&&!exited){try{endpoint=JSON.parse(fs.readFileSync(endpointFile));break;}catch{await new Promise(r=>setTimeout(r,100));}}
-        assert.equal(endpoint?.version,'0.15.2');const base='http://127.0.0.1:'+endpoint.controlPort,headers={Authorization:'Bearer '+endpoint.token};
+        assert.equal(endpoint?.version,'0.16.0');const base='http://127.0.0.1:'+endpoint.controlPort,headers={Authorization:'Bearer '+endpoint.token};
         assert.equal((await fetch(base+'/provider-check',{method:'POST'})).status,403);
         const result=await (await fetch(base+'/provider-check',{method:'POST',headers})).json();
-        assert.equal(result.version,'0.15.2');assert.equal(result.providerCertificate.provider,'riseup');
+        assert.equal(result.version,'0.16.0');assert.equal(result.providerCertificate.provider,'riseup');
         const status=await (await fetch(base+'/status',{headers})).json();assert.equal(status.phase,'idle');assert.equal(status.routesVerified,false);
         const stopped=await (await fetch(base+'/stop',{method:'POST',headers})).json();assert.equal(stopped.cleanupConfirmed,true);
         const until=Date.now()+5000;while(!exited&&Date.now()<until)await new Promise(r=>setTimeout(r,100));assert.equal(exited,true);assert.equal(fs.existsSync(endpointFile),false);

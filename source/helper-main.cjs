@@ -5,7 +5,7 @@ const {SESSION_LIMITS}=require('./session-contract.cjs');
 async function runCallShareHelper(root, {Transport = require('./provider-transport.cjs').ProviderTransport, exit = () => process.exit(0), leaseMs = 30000, watchdogMs = 5000, Provider = require('./riseup-bootstrap.cjs').RiseupBootstrap} = {}) {
     const fs = require('node:fs'), path = require('node:path'), net = require('node:net');
     const http = require('node:http'), crypto = require('node:crypto');
-    const version = '0.15.2';
+    const version = '0.16.0';
     const controlDir = path.join(root, 'control');
     const endpointFile = path.join(controlDir, 'endpoint.json');
     const instance = crypto.randomBytes(32).toString('hex');
@@ -89,7 +89,18 @@ async function runCallShareHelper(root, {Transport = require('./provider-transpo
                 req.headers.authorization!==`Bearer ${token}`||Number(req.headers['content-length']||0)>0||req.headers['transfer-encoding']){
                 respond(403,{error:'refused'});return;
             }
-            if(req.url==='/status'&&req.method==='GET'){lease=Date.now();respond(200,status());return;}
+            if(req.url==='/status'&&req.method==='GET'){
+                lease=Date.now();
+                const value=status();
+                for(const key of ['network','networkBefore']){
+                    const at=value[key]?.at;
+                    if(Number.isSafeInteger(at)&&at>0&&req.headers['x-callshare-'+key.toLowerCase()]===String(at)){
+                        delete value[key];
+                        value[key+'UnchangedAt']=at;
+                    }
+                }
+                respond(200,value);return;
+            }
             if(req.url==='/provider-check'&&req.method==='POST'){
                 lease=Date.now();req.socket.setTimeout(50000);
                 if(!publicCheck)publicCheck=Promise.resolve().then(()=>new Provider().checkCertificate()).finally(()=>{publicCheck=null;lease=Date.now();});

@@ -74,18 +74,31 @@ class SessionClient {
             const file=this.path.join(this.root,'control','endpoint.json');
             if(this.fs.statSync(file).size>4096)return null;
             const value=JSON.parse(this.fs.readFileSync(file,'utf8'));
-            if(value.protocol!==1||value.version!=='0.15.2'||!Number.isInteger(value.controlPort)||value.controlPort<1024||value.controlPort>65535||
+            if(value.protocol!==1||value.version!=='0.16.0'||!Number.isInteger(value.controlPort)||value.controlPort<1024||value.controlPort>65535||
                 !/^[a-f0-9]{64}$/.test(value.instance)||!/^[a-f0-9]{64}$/.test(value.token))return null;
             return value;
         }catch{return null;}
     }
     async command(endpoint,path,method='GET'){
         const startHeaders=method==='POST'&&/^\/(?:start|start-voice|warm-voice)(?:\/|$)/.test(path)&&Number.isSafeInteger(this.prepareDeadline)?{'X-CallShare-Deadline':String(this.prepareDeadline)}:{};
+        const previous=path==='/status'&&this.endpoint?.instance===endpoint.instance?this.lastStatus:null;
+        const headers={Authorization:`Bearer ${endpoint.token}`,...startHeaders};
+        for(const key of ['network','networkBefore']){
+            const at=previous?.[key]?.at;
+            if(Number.isSafeInteger(at)&&at>0)headers['x-callshare-'+key.toLowerCase()]=String(at);
+        }
         const response=await this.fetch(`http://127.0.0.1:${endpoint.controlPort}${path}`,{
-            method,headers:{Authorization:`Bearer ${endpoint.token}`,...startHeaders},timeout:path==='/stop'?95000:path==='/provider-check'?50000:['/pause','/resume'].includes(path)?30000:2500,redirect:'error'});
+            method,headers,timeout:path==='/stop'?95000:path==='/provider-check'?50000:['/pause','/resume'].includes(path)?30000:2500,redirect:'error'});
         if(!response||response.status<200||response.status>=300)throw this.error('CS_HELPER_CONTROL');
         const result=await response.json();
-        if(result.protocol!==1||result.version!=='0.15.2'||result.instance!==endpoint.instance)throw this.error('CS_HELPER_PROTOCOL');
+        if(result.protocol!==1||result.version!=='0.16.0'||result.instance!==endpoint.instance)throw this.error('CS_HELPER_PROTOCOL');
+        for(const key of ['network','networkBefore']){
+            const unchanged=result[key+'UnchangedAt'];
+            if(unchanged!==undefined){
+                if(!Number.isSafeInteger(unchanged)||unchanged<=0||previous?.[key]?.at!==unchanged)throw this.error('CS_HELPER_PROTOCOL');
+                result[key]=previous[key];
+            }
+        }
         return result;
     }
     async available(){
